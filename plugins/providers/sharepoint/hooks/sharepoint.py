@@ -9,7 +9,7 @@ Connection (conn_type="sharepoint"):
 
 The target SharePoint site URL is intentionally not part of the connection:
 it varies per DAG and is expected to come from that DAG folder's
-config.yaml (see plugins/utils/dag_config.py), since Sites.Selected grants
+config.toml (see plugins/utils/dag_config.py), since Sites.Selected grants
 are issued per site anyway.
 
 Auth is bridged through office365-rest-python-client's Entra (Azure AD)

@@ -29,7 +29,6 @@ source = { virtual = "." }
 dependencies = [
     { name = "apache-airflow" },
     { name = "office365-rest-python-client" },
-    { name = "pyyaml" },
 ]
 
 [package.dev-dependencies]
@@ -44,7 +43,6 @@ dev = [
 requires-dist = [
     { name = "apache-airflow", specifier = "==3.2.2" },
     { name = "office365-rest-python-client", specifier = "==2.6.2" },
-    { name = "pyyaml", specifier = "==6.0.3" },
 ]
 
 [package.metadata.requires-dev]
