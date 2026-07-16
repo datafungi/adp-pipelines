@@ -56,17 +56,14 @@ def test_sharepoint_hook_class_name_matches():
 
 
 def test_sharepoint_declares_no_extra_fields():
-    """The hook reads native Connection fields only. A conn-field here would add an
-    `extra` key nothing consumes -- and for the private key specifically, would
-    render it as cleartext PEM instead of using the masked `password` slot."""
+    """The hook reads native fields only; a conn-field would add an unread `extra`
+    key, and would render the private key as cleartext rather than masked."""
     assert "conn-fields" not in _sharepoint_entry()
 
 
 def test_sharepoint_repurposed_fields_relabeled_not_hidden():
-    """Four native fields are repurposed to carry Entra certificate credentials, two
-    of them (`schema`, `password`) holding something their stock label actively
-    misdescribes. Each must stay visible and be relabeled, or the intake form asks
-    for a bare 'Schema' and a 'Password' that is neither."""
+    """`schema` and `password` hold something their stock labels misdescribe, so
+    each must stay visible and relabeled."""
     behaviour = _sharepoint_entry()["ui-field-behaviour"]
 
     assert behaviour["relabeling"] == {

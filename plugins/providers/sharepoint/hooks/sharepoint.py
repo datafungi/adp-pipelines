@@ -1,52 +1,25 @@
-"""Airflow hook for SharePoint Online, authenticated as an Azure AD (Entra ID)
-app registration with app-only permissions scoped via Sites.Selected.
+r"""Airflow hook for SharePoint Online, authenticated as an Entra ID app
+registration with app-only permissions scoped via Sites.Selected.
 
-Authentication is certificate-only. That is a SharePoint constraint, not a
-preference: Entra stamps every app-only token with an `appidacr` claim recording
-how the app proved its identity -- "1" for a client secret, "2" for a
-certificate -- and the SharePoint REST API refuses any app-only token that isn't
-`appidacr=2`, answering 401 "Unsupported app only token". Entra issues the
-client-secret token perfectly happily, with the right audience and the
-Sites.Selected role present, so the rejection surfaces only at the API and looks
-like a permissions problem it isn't. Client secrets do authenticate app-only
-against SharePoint under the legacy ACS model (see office365.runtime.auth.
-providers.acs_token_provider.ACSTokenProvider, reachable via ClientContext.
-with_client_credentials or with_credentials(ClientCredential(...))), but ACS is
-retired for new tenants and cannot be scoped with Sites.Selected at all, so it
-is not a way out of this -- reaching for it trades a 401 for a silent
-blast-radius increase. Microsoft Graph does accept `appidacr=1`; a future
-Graph-based hook could take a secret, but this one talks to SharePoint REST.
+Certificate-only, which is SharePoint's rule rather than a preference: it refuses
+app-only tokens whose `appidacr` claim isn't "2" (certificate), so a client secret
+401s however it's consented. Legacy ACS is not the way out -- it can't be scoped
+with Sites.Selected at all. See docs/providers/sharepoint/service-principal-setup.md.
 
-Connection (conn_type="sharepoint"), native fields only -- no `extra` needed:
-    login    -> Azure AD application (client) ID
-    host     -> tenant domain name, e.g. "<tenant>.onmicrosoft.com"
+Connection (conn_type="sharepoint"), native fields only -- nothing in `extra`:
+    login    -> application (client) ID
+    host     -> tenant domain, e.g. "<tenant>.onmicrosoft.com"
     schema   -> certificate thumbprint
-    password -> certificate private key (PEM)
+    password -> certificate private key (PEM, newlines escaped as \n)
 
-`password` carries the private key rather than a client secret, which never
-authenticates here. It is the right slot for it regardless: Airflow renders it
-masked, where a custom extra field would show the key in cleartext.
+`password` holds the key because Airflow masks and encrypts that field; the cost is
+that it's single-line, hence the escaping. The key must be unencrypted -- no
+passphrase is passed to MSAL. Field labels live in
+provider_registration/adp_provider_reg/get_provider_info.py.
 
-UI-facing field metadata (ui-field-behaviour) lives in
-provider_registration/adp_provider_reg/get_provider_info.py, not here -- see
-that module's docstring for why.
-
-The target SharePoint site URL is intentionally not part of the connection:
-it varies per DAG and is expected to come from that DAG folder's
-config.toml (see plugins/utils/dag_config.py), since Sites.Selected grants
-are issued per site anyway.
-
-The token is acquired through office365-rest-python-client's Entra (Azure AD)
-MSAL-backed AuthenticationContext and handed to ClientContext as a token
-callback. ClientContext.with_client_certificate would also be MSAL-backed and
-safe on the ACS count, but going through AuthenticationContext directly keeps
-scope derivation explicit.
-
-Tokens are scoped to the SharePoint resource (e.g.
-"https://<tenant>.sharepoint.com/.default"), not Microsoft Graph, because
-ClientContext talks to the SharePoint REST API. The Sites.Selected grant the
-app registration needs is therefore the SharePoint one; per-site access is
-still administered through Graph's sites/{id}/permissions.
+site_url is not part of the connection: Sites.Selected grants are per site, so it
+comes from the DAG folder's config.toml (see plugins/utils/dag_config.py). Tokens
+scope to the SharePoint resource, not Graph.
 """
 
 from __future__ import annotations
@@ -54,10 +27,43 @@ from __future__ import annotations
 from urllib.parse import urlsplit
 
 from airflow.sdk.bases.hook import BaseHook
+from cryptography.exceptions import UnsupportedAlgorithm
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
 from office365.runtime.auth.entra.authentication_context import (
     AuthenticationContext as EntraAuthenticationContext,
 )
 from office365.sharepoint.client_context import ClientContext
+
+
+def _load_private_key(private_key: str, conn_id: str) -> str:
+    r"""Return the PEM with real line breaks, having checked it parses.
+
+    Unescaping is unconditional: Airflow's `password` field is single-line and
+    AIRFLOW_CONN_* is JSON, so a PEM can only arrive `\n`-escaped. PEM armour and
+    base64 never contain a backslash, so `\n` is never key material.
+
+    Parsing here is purely for the error message. MSAL fails deep inside its client
+    assertion with `InvalidKeyError: Could not parse the provided public key`, which
+    names neither the connection nor the cause, and is reached only after a token
+    request -- so the same message covers a wrong key, an encrypted key, and a
+    pasted certificate.
+    """
+    pem = private_key.replace("\\r\\n", "\n").replace("\\n", "\n")
+    try:
+        load_pem_private_key(pem.encode(), password=None)
+    except TypeError as exc:
+        raise ValueError(
+            f"Connection '{conn_id}' has an encrypted 'private_key', which this hook "
+            "cannot decrypt -- it passes no passphrase to MSAL. Re-issue the key "
+            "unencrypted (openssl req ... -nodes)."
+        ) from exc
+    except (ValueError, UnsupportedAlgorithm) as exc:
+        raise ValueError(
+            f"Connection '{conn_id}' has a 'private_key' that is not a readable PEM "
+            f"private key ({exc}). Check it is the private key (private-key.pem) and "
+            "not the certificate, and that its newlines are escaped as \\n."
+        ) from exc
+    return pem
 
 
 class SharePointHook(BaseHook):
@@ -105,7 +111,11 @@ class SharePointHook(BaseHook):
 
         entra_auth = EntraAuthenticationContext(
             tenant=conn.host, scopes=scopes
-        ).with_certificate(conn.login, conn.schema, conn.password)
+        ).with_certificate(
+            conn.login,
+            conn.schema,
+            _load_private_key(conn.password, self.sharepoint_conn_id),
+        )
 
         self._client_context = ClientContext(self.site_url).with_access_token(
             entra_auth.acquire_token

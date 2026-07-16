@@ -63,6 +63,7 @@ dependencies = [
     { name = "apache-airflow-providers-microsoft-azure" },
     { name = "azure-identity" },
     { name = "azure-keyvault-secrets" },
+    { name = "cryptography" },
     { name = "office365-rest-python-client" },
 ]
 
@@ -84,6 +85,7 @@ requires-dist = [
     { name = "apache-airflow-providers-microsoft-azure", specifier = "==13.3.0" },
     { name = "azure-identity", specifier = "==1.25.3" },
     { name = "azure-keyvault-secrets", specifier = "==4.11.0" },
+    { name = "cryptography", specifier = ">=44.0.0" },
     { name = "office365-rest-python-client", specifier = "==2.6.2" },
 ]
 

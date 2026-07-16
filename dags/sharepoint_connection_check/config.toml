@@ -1,0 +1,9 @@
+[dag]
+display_name = "SharePoint Connection Check"
+owner = "data-eng"
+# No schedule key: this DAG is manual-trigger only. It proves the connection
+# works; it doesn't move data, so there's nothing to run on a cadence.
+
+[sharepoint]
+site_url = "https://datafungi.sharepoint.com/sites/talentacquisition"
+sharepoint_conn_id = "sharepoint-default-conn"

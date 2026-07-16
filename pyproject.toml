@@ -11,6 +11,9 @@ dependencies = [
     "apache-airflow-providers-microsoft-azure==13.3.0",
     "azure-identity==1.25.3",
     "azure-keyvault-secrets==4.11.0",
+    # Transitive via airflow/msal, but SharePointHook imports it directly to validate
+    # the certificate private key. Floor, not a pin: airflow resolves the real version.
+    "cryptography>=44.0.0",
     "office365-rest-python-client==2.6.2",
 ]
 
