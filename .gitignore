@@ -223,3 +223,14 @@ scripts
 
 # Airflow local runtime logs (bind-mounted by docker-compose)
 /logs/
+
+# Certificates and private keys. The SharePoint setup doc's openssl step writes
+# private-key.pem into the working directory by default.
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Local scratch smoke test for SharePointHook -- drives live credentials, so it
+# stays a working-copy tool rather than something shipped in the image.
+/main.py

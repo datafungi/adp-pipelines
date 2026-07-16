@@ -11,22 +11,28 @@ that entry point exists. The hook classes it points to still live in
 plugins/ and are resolved at import time once that folder is on
 sys.path -- this package does not duplicate or vendor them.
 
-`conn-fields`/`ui-field-behaviour` below are read straight off this dict
-by ProvidersManager (providers_manager.py's `_load_ui_metadata`) -- no
-provider.yaml file is involved, that's just the authoring format real
-Apache providers compile into this same shape at build time. Defining
-them here instead of as `get_connection_form_widgets`/`get_ui_field_behaviour`
-on the hook class itself avoids the AirflowProviderDeprecationWarning
-those emit as of Airflow 3.2.
+`ui-field-behaviour` below is read straight off this dict by ProvidersManager
+(providers_manager.py's `_load_ui_metadata`) -- no provider.yaml file is
+involved, that's just the authoring format real Apache providers compile into
+this same shape at build time. Defining it here instead of as
+`get_connection_form_widgets`/`get_ui_field_behaviour` on the hook class itself
+avoids the AirflowProviderDeprecationWarning those emit as of Airflow 3.2.
 
-No explicit auth-method switch: SharePointHook.get_conn() picks certificate
-auth over client-secret auth whenever extra.private_key is set, so there's
-no field here to fall out of sync with which fields are actually filled in.
-Each auth method also sources its own tenant identifier rather than sharing
-one: client-secret auth uses extra.tenant_id (GUID), certificate auth uses
-the native `host` field repurposed to hold the tenant domain name (e.g.
-"<tenant>.onmicrosoft.com") -- see SharePointHook's docstring for why they
-differ.
+There are no `conn-fields`, and so nothing in `extra`: all four values the hook
+needs map onto native Connection fields, relabeled to say what they hold here.
+`login` and `host` are near-literal. The other two are repurposed:
+
+  schema   -> certificate thumbprint. A free native string field; the thumbprint
+              is a public identifier, so it not being masked costs nothing.
+  password -> certificate private key (PEM). Not a client secret: SharePoint's
+              REST API rejects app-only tokens issued against one (see
+              SharePointHook's docstring for the `appidacr` detail), so the hook
+              has no secret to store. Putting the key here rather than in a
+              custom extra field means Airflow renders it masked instead of as
+              cleartext PEM in the form.
+
+`extra` is hidden because nothing reads it, and there is no auth-method switch
+because there is one auth method.
 """
 
 from __future__ import annotations
@@ -41,35 +47,18 @@ def get_provider_info() -> dict:
             {
                 "hook-class-name": "providers.sharepoint.hooks.sharepoint.SharePointHook",
                 "connection-type": "sharepoint",
-                "conn-fields": {
-                    "tenant_id": {
-                        "label": "Tenant ID",
-                        "description": "Azure AD (Entra ID) tenant ID. Used for client-secret auth.",
-                        "schema": {"type": ["string", "null"]},
-                    },
-                    "thumbprint": {
-                        "label": "Certificate Thumbprint",
-                        "description": "Required if Certificate Private Key is set.",
-                        "schema": {"type": ["string", "null"], "format": "password"},
-                    },
-                    "private_key": {
-                        "label": "Certificate Private Key (PEM)",
-                        "description": "If set, certificate auth is used instead of Client Secret.",
-                        "schema": {"type": ["string", "null"], "format": "password"},
-                    },
-                },
                 "ui-field-behaviour": {
-                    "hidden-fields": ["schema", "port"],
+                    "hidden-fields": ["port", "extra"],
                     "relabeling": {
                         "login": "Client ID",
-                        "password": "Client Secret",
                         "host": "Tenant",
+                        "schema": "Certificate Thumbprint",
+                        "password": "Certificate Private Key (PEM)",
                     },
                     "placeholders": {
-                        "host": "<tenant>.onmicrosoft.com -- required if Certificate Private Key is set",
-                        "password": "Used unless Certificate Private Key is set",
-                        "thumbprint": "Required if Certificate Private Key is set",
-                        "private_key": "Takes precedence over Client Secret if set",
+                        "host": "<tenant>.onmicrosoft.com",
+                        "schema": "Thumbprint shown after uploading the certificate",
+                        "password": "-----BEGIN PRIVATE KEY-----",
                     },
                 },
             }

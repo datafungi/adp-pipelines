@@ -8,35 +8,41 @@ from providers.sharepoint.hooks.sharepoint import SharePointHook
 
 SITE_URL = "https://contoso.sharepoint.com/sites/TalentAcquisition"
 CLIENT_ID = "11111111-1111-1111-1111-111111111111"
-CLIENT_SECRET = "super-secret-value"
-TENANT_ID = "22222222-2222-2222-2222-222222222222"
 TENANT_DOMAIN = "contoso.onmicrosoft.com"
+THUMBPRINT = "AA:BB:CC"
+PRIVATE_KEY = "-----BEGIN PRIVATE KEY-----..."
 EXPECTED_SCOPE = "https://contoso.sharepoint.com/.default"
 
 
 class FakeConnection:
-    def __init__(self, login, password, extra_dejson, host=None):
-        self.login = login
-        self.password = password
-        self.extra_dejson = extra_dejson
-        self.host = host
+    """Stands in for an Airflow Connection.
 
+    Deliberately has no `extra_dejson`: the hook reads native fields only, so an
+    AttributeError here is a real failure rather than a fixture gap.
+    """
 
-def _patch_get_connection(mocker, extra_dejson=None, host=None):
-    conn = FakeConnection(
+    def __init__(
+        self,
         login=CLIENT_ID,
-        password=CLIENT_SECRET,
-        extra_dejson=extra_dejson
-        if extra_dejson is not None
-        else {"tenant_id": TENANT_ID},
-        host=host,
-    )
+        host=TENANT_DOMAIN,
+        schema=THUMBPRINT,
+        password=PRIVATE_KEY,
+    ):
+        self.login = login
+        self.host = host
+        self.schema = schema
+        self.password = password
+
+
+def _patch_get_connection(mocker, **kwargs):
+    conn = FakeConnection(**kwargs)
     return mocker.patch.object(SharePointHook, "get_connection", return_value=conn)
 
 
 def _patch_auth_chain(mocker):
     """Patch the Entra AuthenticationContext + ClientContext bridge and return both mocks."""
     fake_entra_auth = mocker.Mock()
+    fake_entra_auth.with_certificate.return_value = fake_entra_auth
     fake_entra_auth.with_client_secret.return_value = fake_entra_auth
     entra_auth_cls = mocker.patch(
         "providers.sharepoint.hooks.sharepoint.EntraAuthenticationContext",
@@ -59,7 +65,10 @@ def test_hook_class_metadata():
     assert SharePointHook.conn_name_attr == "sharepoint_conn_id"
 
 
-def test_get_conn_authenticates_via_entra_client_secret(mocker):
+def test_get_conn_authenticates_via_certificate(mocker):
+    """`password` holds the private key, never a client secret -- SharePoint refuses
+    app-only tokens that aren't appidacr=2, and an earlier revision regressed onto
+    exactly that path, hence the with_client_secret assertion."""
     get_connection = _patch_get_connection(mocker)
     entra_auth_cls, fake_entra_auth, client_context_cls, fake_ctx = _patch_auth_chain(
         mocker
@@ -68,8 +77,11 @@ def test_get_conn_authenticates_via_entra_client_secret(mocker):
     hook = SharePointHook(site_url=SITE_URL, sharepoint_conn_id="sharepoint_default")
     result = hook.get_conn()
 
-    entra_auth_cls.assert_called_once_with(tenant=TENANT_ID, scopes=[EXPECTED_SCOPE])
-    fake_entra_auth.with_client_secret.assert_called_once_with(CLIENT_ID, CLIENT_SECRET)
+    entra_auth_cls.assert_called_once_with(tenant=TENANT_DOMAIN, scopes=[EXPECTED_SCOPE])
+    fake_entra_auth.with_certificate.assert_called_once_with(
+        CLIENT_ID, THUMBPRINT, PRIVATE_KEY
+    )
+    fake_entra_auth.with_client_secret.assert_not_called()
     client_context_cls.assert_called_once_with(SITE_URL)
     fake_ctx.with_access_token.assert_called_once_with(fake_entra_auth.acquire_token)
     get_connection.assert_called_once_with("sharepoint_default")
@@ -90,22 +102,9 @@ def test_get_conn_caches_client_context(mocker):
     client_context_cls.assert_called_once()
 
 
-def test_get_conn_missing_tenant_id_raises(mocker):
-    _patch_get_connection(mocker, extra_dejson={})
-    _patch_auth_chain(mocker)
-
-    hook = SharePointHook(site_url=SITE_URL, sharepoint_conn_id="sharepoint_default")
-
-    with pytest.raises(ValueError, match="tenant_id"):
-        hook.get_conn()
-
-
 @pytest.mark.parametrize("login", [None, ""])
 def test_get_conn_missing_login_raises(mocker, login):
-    conn = FakeConnection(
-        login=login, password=CLIENT_SECRET, extra_dejson={"tenant_id": TENANT_ID}
-    )
-    mocker.patch.object(SharePointHook, "get_connection", return_value=conn)
+    _patch_get_connection(mocker, login=login)
     _patch_auth_chain(mocker)
 
     hook = SharePointHook(site_url=SITE_URL, sharepoint_conn_id="sharepoint_default")
@@ -114,73 +113,9 @@ def test_get_conn_missing_login_raises(mocker, login):
         hook.get_conn()
 
 
-def test_get_conn_missing_password_for_client_secret_raises(mocker):
-    conn = FakeConnection(
-        login=CLIENT_ID, password=None, extra_dejson={"tenant_id": TENANT_ID}
-    )
-    mocker.patch.object(SharePointHook, "get_connection", return_value=conn)
-    _patch_auth_chain(mocker)
-
-    hook = SharePointHook(site_url=SITE_URL, sharepoint_conn_id="sharepoint_default")
-
-    with pytest.raises(ValueError, match="client_secret"):
-        hook.get_conn()
-
-
-def test_get_conn_authenticates_via_certificate(mocker):
-    """Certificate auth (triggered by extra.private_key) sources its tenant from the
-    native `host` field, not extra.tenant_id -- the two auth paths don't share one."""
-    thumbprint = "AA:BB:CC"
-    private_key = "-----BEGIN PRIVATE KEY-----..."
-    conn = FakeConnection(
-        login=CLIENT_ID,
-        password=None,
-        extra_dejson={"thumbprint": thumbprint, "private_key": private_key},
-        host=TENANT_DOMAIN,
-    )
-    mocker.patch.object(SharePointHook, "get_connection", return_value=conn)
-    entra_auth_cls, fake_entra_auth, client_context_cls, fake_ctx = _patch_auth_chain(
-        mocker
-    )
-    fake_entra_auth.with_certificate.return_value = fake_entra_auth
-
-    hook = SharePointHook(site_url=SITE_URL, sharepoint_conn_id="sharepoint_default")
-    result = hook.get_conn()
-
-    entra_auth_cls.assert_called_once_with(tenant=TENANT_DOMAIN, scopes=[EXPECTED_SCOPE])
-    fake_entra_auth.with_certificate.assert_called_once_with(
-        CLIENT_ID, thumbprint, private_key
-    )
-    fake_entra_auth.with_client_secret.assert_not_called()
-    client_context_cls.assert_called_once_with(SITE_URL)
-    fake_ctx.with_access_token.assert_called_once_with(fake_entra_auth.acquire_token)
-    assert result is fake_ctx
-
-
-def test_get_conn_certificate_missing_thumbprint_raises(mocker):
-    conn = FakeConnection(
-        login=CLIENT_ID,
-        password=None,
-        extra_dejson={"private_key": "-----BEGIN PRIVATE KEY-----..."},
-        host=TENANT_DOMAIN,
-    )
-    mocker.patch.object(SharePointHook, "get_connection", return_value=conn)
-    _patch_auth_chain(mocker)
-
-    hook = SharePointHook(site_url=SITE_URL, sharepoint_conn_id="sharepoint_default")
-
-    with pytest.raises(ValueError, match="thumbprint"):
-        hook.get_conn()
-
-
-def test_get_conn_certificate_missing_host_raises(mocker):
-    conn = FakeConnection(
-        login=CLIENT_ID,
-        password=None,
-        extra_dejson={"thumbprint": "AA:BB:CC", "private_key": "-----BEGIN..."},
-        host=None,
-    )
-    mocker.patch.object(SharePointHook, "get_connection", return_value=conn)
+@pytest.mark.parametrize("host", [None, ""])
+def test_get_conn_missing_host_raises(mocker, host):
+    _patch_get_connection(mocker, host=host)
     _patch_auth_chain(mocker)
 
     hook = SharePointHook(site_url=SITE_URL, sharepoint_conn_id="sharepoint_default")
@@ -189,20 +124,23 @@ def test_get_conn_certificate_missing_host_raises(mocker):
         hook.get_conn()
 
 
-def test_get_conn_ignores_thumbprint_when_private_key_absent(mocker):
-    """A leftover/empty 'thumbprint' with no 'private_key' must not trip certificate
-    auth -- private_key alone is the switch."""
-    get_connection = _patch_get_connection(
-        mocker, extra_dejson={"tenant_id": TENANT_ID, "thumbprint": "AA:BB:CC"}
-    )
-    entra_auth_cls, fake_entra_auth, _client_context_cls, _fake_ctx = _patch_auth_chain(
-        mocker
-    )
+@pytest.mark.parametrize("schema", [None, ""])
+def test_get_conn_missing_schema_raises(mocker, schema):
+    _patch_get_connection(mocker, schema=schema)
+    _patch_auth_chain(mocker)
 
     hook = SharePointHook(site_url=SITE_URL, sharepoint_conn_id="sharepoint_default")
-    hook.get_conn()
 
-    entra_auth_cls.assert_called_once_with(tenant=TENANT_ID, scopes=[EXPECTED_SCOPE])
-    fake_entra_auth.with_client_secret.assert_called_once_with(CLIENT_ID, CLIENT_SECRET)
-    fake_entra_auth.with_certificate.assert_not_called()
-    get_connection.assert_called_once_with("sharepoint_default")
+    with pytest.raises(ValueError, match="thumbprint"):
+        hook.get_conn()
+
+
+@pytest.mark.parametrize("password", [None, ""])
+def test_get_conn_missing_password_raises(mocker, password):
+    _patch_get_connection(mocker, password=password)
+    _patch_auth_chain(mocker)
+
+    hook = SharePointHook(site_url=SITE_URL, sharepoint_conn_id="sharepoint_default")
+
+    with pytest.raises(ValueError, match="private_key"):
+        hook.get_conn()

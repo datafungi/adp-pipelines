@@ -1,43 +1,46 @@
 """Airflow hook for SharePoint Online, authenticated as an Azure AD (Entra ID)
 app registration with app-only permissions scoped via Sites.Selected.
-Supports two auth methods: certificate takes precedence over client secret
-whenever extra.private_key is set, no explicit switch needed. Each method
-sources its own tenant identifier (see below) rather than sharing one, so a
-connection only needs to fill in the fields its chosen method actually uses.
 
-Connection (conn_type="sharepoint"):
+Authentication is certificate-only. That is a SharePoint constraint, not a
+preference: Entra stamps every app-only token with an `appidacr` claim recording
+how the app proved its identity -- "1" for a client secret, "2" for a
+certificate -- and the SharePoint REST API refuses any app-only token that isn't
+`appidacr=2`, answering 401 "Unsupported app only token". Entra issues the
+client-secret token perfectly happily, with the right audience and the
+Sites.Selected role present, so the rejection surfaces only at the API and looks
+like a permissions problem it isn't. Client secrets do authenticate app-only
+against SharePoint under the legacy ACS model (see office365.runtime.auth.
+providers.acs_token_provider.ACSTokenProvider, reachable via ClientContext.
+with_client_credentials or with_credentials(ClientCredential(...))), but ACS is
+retired for new tenants and cannot be scoped with Sites.Selected at all, so it
+is not a way out of this -- reaching for it trades a 401 for a silent
+blast-radius increase. Microsoft Graph does accept `appidacr=1`; a future
+Graph-based hook could take a secret, but this one talks to SharePoint REST.
+
+Connection (conn_type="sharepoint"), native fields only -- no `extra` needed:
     login    -> Azure AD application (client) ID
     host     -> tenant domain name, e.g. "<tenant>.onmicrosoft.com"
-                (certificate auth only)
-    password -> client secret (used unless extra.private_key is set)
-    extra    -> {
-        "tenant_id": "<azure-ad-tenant-id>",  # client-secret auth only
-        # for certificate auth (takes precedence if private_key is set):
-        "thumbprint": "<certificate-thumbprint>",
-        "private_key": "<certificate-private-key-pem>",
-    }
+    schema   -> certificate thumbprint
+    password -> certificate private key (PEM)
 
-UI-facing field metadata (conn-fields / ui-field-behaviour) lives in
-provider_registration/adp_provider_reg/get_provider_info.py, not here --
-see that module's docstring for why.
+`password` carries the private key rather than a client secret, which never
+authenticates here. It is the right slot for it regardless: Airflow renders it
+masked, where a custom extra field would show the key in cleartext.
+
+UI-facing field metadata (ui-field-behaviour) lives in
+provider_registration/adp_provider_reg/get_provider_info.py, not here -- see
+that module's docstring for why.
 
 The target SharePoint site URL is intentionally not part of the connection:
 it varies per DAG and is expected to come from that DAG folder's
 config.toml (see plugins/utils/dag_config.py), since Sites.Selected grants
 are issued per site anyway.
 
-Both auth methods acquire their token through office365-rest-python-client's
-Entra (Azure AD) MSAL-backed AuthenticationContext, which is then handed to
-ClientContext as a token callback. Notably this means *not* reaching for
-ClientContext.with_client_credentials (nor the with_credentials(
-ClientCredential(...)) call it delegates to): those authenticate via the
-legacy ACS app-only model (see office365.runtime.auth.providers.
-acs_token_provider.ACSTokenProvider), which app permissions like
-Sites.Selected cannot be scoped against, and which Microsoft has retired for
-new tenants. ClientContext.with_client_certificate would be safe on that
-count -- it is MSAL-backed -- but routing both methods through one
-AuthenticationContext keeps scope derivation and token acquisition identical
-across them.
+The token is acquired through office365-rest-python-client's Entra (Azure AD)
+MSAL-backed AuthenticationContext and handed to ClientContext as a token
+callback. ClientContext.with_client_certificate would also be MSAL-backed and
+safe on the ACS count, but going through AuthenticationContext directly keeps
+scope derivation explicit.
 
 Tokens are scoped to the SharePoint resource (e.g.
 "https://<tenant>.sharepoint.com/.default"), not Microsoft Graph, because
@@ -83,42 +86,26 @@ class SharePointHook(BaseHook):
             raise ValueError(
                 f"Connection '{self.sharepoint_conn_id}' is missing 'client_id'."
             )
+        if not conn.host:
+            raise ValueError(
+                f"Connection '{self.sharepoint_conn_id}' is missing 'tenant'."
+            )
+
+        if not conn.schema:
+            raise ValueError(
+                f"Connection '{self.sharepoint_conn_id}' is missing 'thumbprint'."
+            )
+        if not conn.password:
+            raise ValueError(
+                f"Connection '{self.sharepoint_conn_id}' is missing 'private_key'."
+            )
 
         scopes = [f"{self._site_resource()}/.default"]
-        private_key = conn.extra_dejson.get("private_key")
+        self.log.debug("Acquiring SharePoint token for scope: %s", scopes[0])
 
-        if private_key:
-            self.log.debug("Private key provided, using certificate authentication.")
-            thumbprint = conn.extra_dejson.get("thumbprint")
-            if not thumbprint:
-                raise ValueError(
-                    f"Connection '{self.sharepoint_conn_id}' has 'private_key' set but is "
-                    "missing 'thumbprint'"
-                )
-            if not conn.host:
-                raise ValueError(
-                    f"Connection '{self.sharepoint_conn_id}' has 'private_key' set but is "
-                    "missing 'tenant'"
-                )
-            entra_auth = EntraAuthenticationContext(
-                tenant=conn.host, scopes=scopes
-            ).with_certificate(conn.login, thumbprint, private_key)
-        else:
-            self.log.debug(
-                "No private key provided, using client secret authentication."
-            )
-            tenant_id = conn.extra_dejson.get("tenant_id")
-            if not tenant_id:
-                raise ValueError(
-                    f"Connection '{self.sharepoint_conn_id}' is missing 'tenant_id'."
-                )
-            if not conn.password:
-                raise ValueError(
-                    f"Connection '{self.sharepoint_conn_id}' is missing 'client_secret'"
-                )
-            entra_auth = EntraAuthenticationContext(
-                tenant=tenant_id, scopes=scopes
-            ).with_client_secret(conn.login, conn.password)
+        entra_auth = EntraAuthenticationContext(
+            tenant=conn.host, scopes=scopes
+        ).with_certificate(conn.login, conn.schema, conn.password)
 
         self._client_context = ClientContext(self.site_url).with_access_token(
             entra_auth.acquire_token
