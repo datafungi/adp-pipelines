@@ -15,6 +15,13 @@ dependencies = [
     # the certificate private key. Floor, not a pin: airflow resolves the real version.
     "cryptography>=44.0.0",
     "office365-rest-python-client==2.6.2",
+    # SharePointHook.read_excel. openpyxl is the xlsx engine, and the only one that can
+    # see a formula (data_only=False) -- calamine and polars both render an uncached
+    # formula as "", so neither can explain an empty column. pandas ships in the airflow
+    # base image but is absent from our resolved set, so it is one base-image bump from
+    # vanishing; pyspark[sql] declares it too. Floors, not pins: airflow resolves these.
+    "openpyxl>=3.1.0",
+    "pandas>=2.2.0",
 ]
 
 [dependency-groups]
@@ -22,11 +29,12 @@ dev = [
     "bandit>=1.9.4",
     "faker>=40.31.0",
     "mypy>=2.3.0",
-    "pandas>=2.3.3",
+    "pandas-stubs>=2.2",
     "pytest==9.1.1",
     "pytest-mock==3.15.1",
     "python-dotenv==1.2.2",
     "ruff>=0.15.21",
+    "types-openpyxl>=3.1",
 ]
 
 [tool.pytest.ini_options]
