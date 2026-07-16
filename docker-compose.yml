@@ -1,0 +1,187 @@
+# Local Airflow for pipeline development — mirrors the AKS deployment.
+#
+# Separate components (api-server / scheduler / dag-processor / triggerer / celery worker)
+# on CeleryExecutor with a Redis broker + Postgres metadata DB, matching prod's Celery
+# half. (Prod also routes a `kubernetes` queue to KubernetesExecutor — not reproducible
+# locally, so this is Celery-only.) DAGs and plugins are bind-mounted from this repo;
+# Connections/Variables resolve from Azure Key Vault via the same secrets backend as AKS.
+#
+# Quick start:
+#   cp .env.example .env            # fill KV_CLIENT_ID / KV_CLIENT_SECRET (local-dev SP)
+#   echo "AIRFLOW_UID=$(id -u)" >> .env   # so ./logs isn't written as root
+#   mkdir -p logs                   # bind-mount target for task logs
+#   docker compose up airflow-init  # db migrate + create admin/admin
+#   docker compose up --build       # UI http://localhost:8080  (admin / admin)
+#
+# Same image AKS runs. `--build` builds from the local Dockerfile + uv.lock so a fresh
+# `uv add` is testable at once; drop it to pull the CI-built tag (AIRFLOW_IMAGE_TAG,
+# default `dev`) after `az acr login -n cradpsea01`.
+
+name: adp-airflow-local
+
+x-airflow-common: &airflow-common
+  image: cradpsea01.azurecr.io/airflow:${AIRFLOW_IMAGE_TAG:-dev}
+  build: .
+  env_file: .env
+  environment: &airflow-env
+    AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
+    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
+    # Scheduler exposes a health HTTP server on :8974 (off by default) — used by the
+    # scheduler healthcheck below, and by the AKS liveness probe.
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+    # --- Secrets backend: Azure Key Vault (mirrors the AKS deployment) ---
+    AIRFLOW__SECRETS__BACKEND: airflow.providers.microsoft.azure.secrets.key_vault.AzureKeyVaultBackend
+    AIRFLOW__SECRETS__BACKEND_KWARGS: >-
+      {"connections_prefix":"airflow-connections","variables_prefix":"airflow-variables","vault_url":"https://kv-adp-dev-sea.vault.azure.net/"}
+    # DefaultAzureCredential -> EnvironmentCredential: the local-dev SP (Secrets User on
+    # the vault). Reuses the KV_* creds already in .env; tenant defaults to the ADP
+    # directory. On AKS this same backend authenticates via workload identity instead.
+    AZURE_TENANT_ID: ${AZURE_TENANT_ID:-333f776e-0027-4602-960c-8360621b775c}
+    AZURE_CLIENT_ID: ${KV_CLIENT_ID:?KV_CLIENT_ID missing from .env (local-dev SP client id)}
+    AZURE_CLIENT_SECRET: ${KV_CLIENT_SECRET:?KV_CLIENT_SECRET missing from .env (local-dev SP secret)}
+  # Run as the host user so bind-mounted ./logs isn't created root-owned.
+  user: "${AIRFLOW_UID:-50000}:0"
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./plugins:/opt/airflow/plugins
+    - ./logs:/opt/airflow/logs
+  depends_on: &airflow-common-depends-on
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    # No published port — reach the DB via `docker compose exec postgres psql -U airflow`.
+
+  redis:
+    image: redis:7.2-bookworm
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # One-shot: run migrations and create the local break-glass admin. `docker compose up
+  # airflow-init` before the first `up`; safe to re-run (user-create is idempotent).
+  airflow-init:
+    <<: *airflow-common
+    command:
+      - bash
+      - -c
+      - |
+        airflow db migrate
+        airflow users create \
+          --username "${_AIRFLOW_WWW_USER_USERNAME:-admin}" \
+          --password "${_AIRFLOW_WWW_USER_PASSWORD:-admin}" \
+          --firstname Admin --lastname User --role Admin \
+          --email admin@example.com || true
+    restart: "no"
+
+  airflow-apiserver:
+    <<: *airflow-common
+    command: api-server
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-worker:
+    <<: *airflow-common
+    command: celery worker
+    healthcheck:
+      test: ["CMD-SHELL", 'celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  # Optional Celery dashboard: `docker compose --profile flower up flower` -> :5555
+  flower:
+    <<: *airflow-common
+    command: celery flower
+    profiles: ["flower"]
+    ports:
+      - "5555:5555"
+    restart: unless-stopped
+
+volumes:
+  postgres-db:

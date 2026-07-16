@@ -6,6 +6,11 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "apache-airflow==3.2.2",
+    "apache-airflow-providers-celery==3.20.0",
+    "apache-airflow-providers-fab==3.6.4",
+    "apache-airflow-providers-microsoft-azure==13.3.0",
+    "azure-identity==1.25.3",
+    "azure-keyvault-secrets==4.11.0",
     "office365-rest-python-client==2.6.2",
 ]
 
@@ -15,11 +20,16 @@ dev = [
     "pandas>=2.3.3",
     "pytest==9.1.1",
     "pytest-mock==3.15.1",
+    "python-dotenv==1.2.2",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["plugins", "dags"]
 testpaths = ["tests"]
+addopts = "-m 'not integration'"
+markers = [
+    "integration: hits real external services; requires credentials (e.g. via .env). Run with `pytest -m integration`.",
+]
 
 [tool.pyright]
 extraPaths = ["plugins", "dags"]
