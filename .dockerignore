@@ -1,5 +1,9 @@
-# The image bakes only the dependency set. DAGs/plugins are mounted at runtime, so keep
-# the build context to pyproject.toml + uv.lock (fast, reproducible, no local junk).
+# The image bakes only the dependency set (plus the tiny provider-registration shim,
+# see Dockerfile). DAGs/plugins are mounted at runtime, so keep the build context to
+# pyproject.toml + uv.lock + provider_registration/ (fast, reproducible, no local junk).
 *
 !pyproject.toml
 !uv.lock
+!provider_registration
+!provider_registration/**
+provider_registration/**/__pycache__

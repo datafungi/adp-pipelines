@@ -1,0 +1,16 @@
+[project]
+name = "adp-provider-registration"
+version = "0.1.0"
+description = "Registers adp-pipelines' custom Airflow connection types via the apache_airflow_provider entry point."
+requires-python = ">=3.12"
+dependencies = []
+
+[project.entry-points."apache_airflow_provider"]
+provider_info = "adp_provider_reg.get_provider_info:get_provider_info"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["adp_provider_reg"]

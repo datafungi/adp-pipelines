@@ -24,7 +24,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["plugins", "dags"]
+pythonpath = ["plugins", "dags", "provider_registration"]
 testpaths = ["tests"]
 addopts = "-m 'not integration'"
 markers = [
@@ -32,5 +32,5 @@ markers = [
 ]
 
 [tool.pyright]
-extraPaths = ["plugins", "dags"]
+extraPaths = ["plugins", "dags", "provider_registration"]
 
