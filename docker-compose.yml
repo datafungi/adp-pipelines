@@ -27,6 +27,18 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
     AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    # Encrypts connections in the metadata DB. Unset, Airflow writes a random key to
+    # each container's own airflow.cfg, which no volume persists -- so containers
+    # can't read each other's connections. Local-only; AKS supplies its own.
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?AIRFLOW_FERNET_KEY missing from .env (see .env.example)}
+    # Airflow 3 workers reach the DB via the api-server's Task Execution API. Both
+    # URLs need setting: execution_api_server_url derives from `{api.base_url}
+    # /execution/`, falling back to localhost -- which inside a worker is the worker.
+    AIRFLOW__API__BASE_URL: http://localhost:8080  # browser-facing
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/  # container-facing
+    # Signs those API calls. Same per-container randomness as the Fernet key.
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:?AIRFLOW_JWT_SECRET missing from .env (see .env.example)}
+    AIRFLOW__API__SECRET_KEY: ${AIRFLOW_API_SECRET_KEY:?AIRFLOW_API_SECRET_KEY missing from .env (see .env.example)}
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
     AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
     AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
