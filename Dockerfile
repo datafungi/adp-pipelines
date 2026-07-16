@@ -4,11 +4,7 @@
 # uv.lock (managed by `uv`), so a `uv add <pkg>` flows into the image on the next
 # build. DAGs and plugins are NOT baked — they are delivered at runtime (git-sync on
 # AKS, bind-mount locally), so only pyproject.toml + uv.lock enter the build context.
-#
-# Same image runs locally (docker-compose `build: .`) and on AKS (pulled from ACR):
-#   az acr build -r cradpsea01 -t airflow:$SHA -t airflow:dev .
-# python3.12 pinned to match uv.lock / .python-version (the base's default tag tracks a
-# newer Python); keeping them equal means the container matches the local .venv exactly.
+
 ARG AIRFLOW_VERSION=3.2.2
 FROM apache/airflow:${AIRFLOW_VERSION}-python3.12
 
@@ -29,3 +25,12 @@ COPY pyproject.toml uv.lock /opt/airflow/
 RUN uv export --frozen --no-dev --no-emit-project --no-hashes -o /tmp/requirements.txt \
  && pip install --no-cache-dir -r /tmp/requirements.txt \
  && rm /opt/airflow/pyproject.toml /opt/airflow/uv.lock /tmp/requirements.txt
+
+# Install the provider-registration shim. 
+# --no-deps: it has none, and this keeps it from ever pulling in a resolver pass against the deps above.
+# --chown: plain COPY creates new dirs as root:root 755, 
+# which the airflow user (uid 50000, gid 0) can't write to even though it belongs to group root — unlike /opt/airflow
+# itself, which the base image already made group-writable. Owning it directly sidesteps that.
+COPY --chown=airflow:0 provider_registration /opt/airflow/provider_registration
+RUN pip install --no-cache-dir --no-deps /opt/airflow/provider_registration \
+ && rm -rf /opt/airflow/provider_registration
