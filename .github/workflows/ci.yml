@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Lint, type-check, scan, test
+    runs-on: ubuntu-latest
+    # One job rather than four: each would re-resolve and re-install Airflow (~1 min)
+    # to run a step lasting seconds. Steps still fail independently and are labelled,
+    # so a red run points at the culprit without hunting.
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v8
+        with:
+          enable-cache: true
+
+      # --locked fails if uv.lock is stale against pyproject.toml rather than quietly
+      # re-resolving. The lock is also what the runtime image installs, so drift caught
+      # here is drift that would otherwise ship to AKS.
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format
+        run: uv run ruff format --check .
+
+      # Paths/strictness come from [tool.mypy] in pyproject.toml.
+      - name: Type check
+        run: uv run mypy
+
+      # Source only -- scanning tests just reports B101 for every assert. Fails the run
+      # on any finding at LOW severity or above; annotate a false positive at the line
+      # with `# nosec <test-id>` and a reason rather than lowering the threshold.
+      - name: Security scan
+        run: uv run bandit -r plugins dags provider_registration
+
+      # Unit tests only -- `-m 'not integration'` is the pyproject default. The
+      # integration marker hits live SharePoint/Key Vault, which CI holds no creds for.
+      - name: Test
+        run: uv run pytest

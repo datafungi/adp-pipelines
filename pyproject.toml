@@ -19,7 +19,9 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "bandit>=1.9.4",
     "faker>=40.31.0",
+    "mypy>=2.3.0",
     "pandas>=2.3.3",
     "pytest==9.1.1",
     "pytest-mock==3.15.1",
@@ -34,6 +36,37 @@ addopts = "-m 'not integration'"
 markers = [
     "integration: hits real external services; requires credentials (e.g. via .env). Run with `pytest -m integration`.",
 ]
+
+[tool.ruff]
+# `.claude/worktrees/*` holds checkouts of other branches. Ruff only skips gitignored
+# paths, and .claude is untracked rather than ignored, so without this a bare
+# `ruff format .` reformats files on branches you aren't working on.
+extend-exclude = [".claude"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["plugins", "dags", "provider_registration"]
+# DAG modules import plugins as top-level packages (`from utils.dag_config import ...`)
+# because Airflow puts plugins/ on sys.path at runtime. Mirrors pytest's `pythonpath`
+# and pyright's `extraPaths` — all three must agree, or imports resolve differently in
+# the editor, the test run, and CI.
+mypy_path = ["plugins", "dags", "provider_registration"]
+# DAG folders carry no __init__.py (Airflow loads each DAG file standalone), so mypy
+# has to treat them as namespace packages rooted at mypy_path.
+namespace_packages = true
+explicit_package_bases = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+disallow_untyped_defs = true
+
+# office365-rest-python-client ships no stubs and no py.typed marker. Scoped to that
+# library rather than a global ignore_missing_imports, which would also mask a
+# genuinely missing dependency anywhere else.
+[[tool.mypy.overrides]]
+module = ["office365.*"]
+ignore_missing_imports = true
 
 [tool.pyright]
 extraPaths = ["plugins", "dags", "provider_registration"]

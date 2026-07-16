@@ -13,6 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from airflow.sdk import dag, task
+from office365.sharepoint.client_context import ClientContext
 
 from providers.sharepoint.hooks.sharepoint import SharePointHook
 from utils.dag_config import load_dag_config
@@ -25,7 +26,7 @@ SHAREPOINT_CONFIG = CONFIG["sharepoint"]
 DOCUMENT_LIBRARY_TEMPLATE = 101
 
 
-def _client_context():
+def _client_context() -> ClientContext:
     """Fresh authenticated context -- each task is its own process, so the hook's
     cache never crosses between them."""
     return SharePointHook(
@@ -43,12 +44,14 @@ def _client_context():
     doc_md=__doc__,
     default_args={"owner": DAG_CONFIG.get("owner", "data-eng")},
 )
-def sharepoint_connection_check():
+def sharepoint_connection_check() -> None:
     @task
     def check_site_access() -> str:
         """Cheapest call that proves the token was accepted."""
         web = _client_context().web.get().execute_query()
-        title = web.properties["Title"]
+        # Annotated because office365 is untyped: without it `properties[...]` is Any
+        # and the declared `-> str` would be unchecked.
+        title: str = web.properties["Title"]
         print(f"Connected to SharePoint site: {title}")
         return title
 

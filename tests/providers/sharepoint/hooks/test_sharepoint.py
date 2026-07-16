@@ -29,9 +29,13 @@ def _pem(encryption=serialization.NoEncryption()) -> str:
 PRIVATE_KEY = _pem()
 ESCAPED_PRIVATE_KEY = PRIVATE_KEY.replace("\n", "\\n")
 ENCRYPTED_PRIVATE_KEY = _pem(serialization.BestAvailableEncryption(b"hunter2"))
-PUBLIC_KEY = _KEY.public_key().public_bytes(
-    serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
-).decode()
+PUBLIC_KEY = (
+    _KEY.public_key()
+    .public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    .decode()
+)
 
 
 class FakeConnection:
@@ -96,7 +100,9 @@ def test_get_conn_authenticates_via_certificate(mocker):
     hook = SharePointHook(site_url=SITE_URL, sharepoint_conn_id="sharepoint_default")
     result = hook.get_conn()
 
-    entra_auth_cls.assert_called_once_with(tenant=TENANT_DOMAIN, scopes=[EXPECTED_SCOPE])
+    entra_auth_cls.assert_called_once_with(
+        tenant=TENANT_DOMAIN, scopes=[EXPECTED_SCOPE]
+    )
     fake_entra_auth.with_certificate.assert_called_once_with(
         CLIENT_ID, THUMBPRINT, PRIVATE_KEY
     )

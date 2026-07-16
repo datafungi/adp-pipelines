@@ -1,0 +1,99 @@
+# Builds the Airflow runtime image and pushes it to the shared ACR.
+#
+# This repo owns the image because it owns the dependency set (pyproject.toml/uv.lock).
+# Only the inputs the image actually bakes trigger a build -- DAGs and plugins are
+# delivered at runtime (git-sync on AKS, bind-mount locally), so changing them must not
+# rebuild anything.
+#
+# Requires three repository variables (Settings -> Secrets and variables -> Actions ->
+# Variables). None are secret: an OIDC client id is inert without a matching federated
+# subject. Values come from the azure-data-platform `shared-acr` stack outputs.
+#   AZURE_CLIENT_ID        -> terraform output ci_client_id
+#   AZURE_TENANT_ID        -> 333f776e-0027-4602-960c-8360621b775c
+#   AZURE_SUBSCRIPTION_ID  -> a360313f-ed88-4cf9-a866-3462e9b94067
+
+name: Build image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - pyproject.toml
+      - uv.lock
+      - provider_registration/**
+      - .dockerignore
+      - .github/workflows/build-image.yml
+  pull_request:
+    paths:
+      - Dockerfile
+      - pyproject.toml
+      - uv.lock
+      - provider_registration/**
+      - .dockerignore
+      - .github/workflows/build-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-image-${{ github.ref }}
+  # Never cancel a main build: every merged sha should end up with an image, since that
+  # is what Helm pins. PR validation runs are fine to supersede.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  ACR_NAME: cradpsea01
+  IMAGE_NAME: airflow
+
+jobs:
+  # A pull request cannot push. Fork PRs get no privileged OIDC token at all, and
+  # trusting a branch subject for unreviewed code would let any PR overwrite `:dev`.
+  # Building on the runner proves the Dockerfile still builds without touching Azure --
+  # .dockerignore applies here identically, so green here means green in the ACR task.
+  validate:
+    name: Validate Dockerfile
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build (no push)
+        run: docker build .
+
+  build:
+    name: Build & push
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # mint the OIDC token that azure/login exchanges for an ARM token
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # `az acr build` runs the build inside ACR: the runner only uploads the context,
+      # so there is no local docker build and no `docker push`. Both tags come off the
+      # single build.
+      #   :<sha>  immutable -- what Helm pins to deploy.
+      #   :dev    moving    -- deliberate carve-out, consumed only by local
+      #                        docker-compose and the dev-cluster MVP.
+      - name: Build in ACR and push
+        run: |
+          az acr build \
+            --registry "$ACR_NAME" \
+            --image "$IMAGE_NAME:$GITHUB_SHA" \
+            --image "$IMAGE_NAME:dev" \
+            .
+
+      - name: Summary
+        run: |
+          echo "Pushed \`$ACR_NAME.azurecr.io/$IMAGE_NAME:$GITHUB_SHA\` (also tagged \`:dev\`)." \
+            >> "$GITHUB_STEP_SUMMARY"
+          echo "Pin it in azure-data-platform: \`helm/airflow/values-dev.yaml\` -> \`defaultAirflowTag\`." \
+            >> "$GITHUB_STEP_SUMMARY"

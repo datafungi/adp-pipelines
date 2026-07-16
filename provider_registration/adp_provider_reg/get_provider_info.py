@@ -28,18 +28,21 @@ def get_provider_info() -> dict:
             {
                 "hook-class-name": "providers.sharepoint.hooks.sharepoint.SharePointHook",
                 "connection-type": "sharepoint",
+                # The two `password` nosec markers below are the connection form's
+                # label and placeholder text -- bandit's B105 fires on any dict key
+                # named "password", regardless of the value. No secret here.
                 "ui-field-behaviour": {
                     "hidden-fields": ["port", "extra"],
                     "relabeling": {
                         "login": "Client ID",
                         "host": "Tenant",
                         "schema": "Certificate Thumbprint",
-                        "password": "Certificate Private Key (PEM)",
+                        "password": "Certificate Private Key (PEM)",  # nosec B105
                     },
                     "placeholders": {
                         "host": "<tenant>.onmicrosoft.com",
                         "schema": "Thumbprint shown after uploading the certificate",
-                        "password": "-----BEGIN PRIVATE KEY-----",
+                        "password": "-----BEGIN PRIVATE KEY-----",  # nosec B105
                     },
                 },
             }

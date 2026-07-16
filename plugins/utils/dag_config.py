@@ -19,7 +19,9 @@ def load_dag_config(dag_folder: str | Path) -> dict[str, Any]:
     """Parse `config.toml` from `dag_folder` and return it as a dict."""
     config_path = Path(dag_folder) / CONFIG_FILENAME
     if not config_path.is_file():
-        raise FileNotFoundError(f"No {CONFIG_FILENAME} found in DAG folder '{dag_folder}'.")
+        raise FileNotFoundError(
+            f"No {CONFIG_FILENAME} found in DAG folder '{dag_folder}'."
+        )
 
     try:
         return tomllib.loads(config_path.read_text())
