@@ -40,36 +40,39 @@ def test_matches_airflow_provider_info_schema():
     jsonschema.validate(get_provider_info(), schema)
 
 
-def test_sharepoint_conn_fields_match_hook_extra_keys():
-    """conn-fields here and extra_dejson.get(...) calls in the hook must agree on
-    key names -- conn-fields is the only thing keeping the intake form in sync
-    with what SharePointHook.get_conn() actually reads."""
-    from providers.sharepoint.hooks.sharepoint import SharePointHook
-
+def _sharepoint_entry():
     info = get_provider_info()
-    sharepoint_entry = next(
+    return next(
         e for e in info["connection-types"] if e["connection-type"] == "sharepoint"
     )
 
-    assert set(sharepoint_entry["conn-fields"]) == {
-        "tenant_id",
-        "thumbprint",
-        "private_key",
-    }
-    assert sharepoint_entry["hook-class-name"] == (
+
+def test_sharepoint_hook_class_name_matches():
+    from providers.sharepoint.hooks.sharepoint import SharePointHook
+
+    assert _sharepoint_entry()["hook-class-name"] == (
         f"{SharePointHook.__module__}.{SharePointHook.__qualname__}"
     )
 
 
-def test_sharepoint_host_relabeled_not_hidden():
-    """The native `host` field is repurposed to carry the certificate-auth tenant
-    domain -- it must stay visible (not in hidden-fields) and be relabeled so the
-    intake form doesn't show it as a bare, unexplained 'Host'."""
-    info = get_provider_info()
-    sharepoint_entry = next(
-        e for e in info["connection-types"] if e["connection-type"] == "sharepoint"
-    )
-    behaviour = sharepoint_entry["ui-field-behaviour"]
+def test_sharepoint_declares_no_extra_fields():
+    """The hook reads native Connection fields only. A conn-field here would add an
+    `extra` key nothing consumes -- and for the private key specifically, would
+    render it as cleartext PEM instead of using the masked `password` slot."""
+    assert "conn-fields" not in _sharepoint_entry()
 
-    assert "host" not in behaviour["hidden-fields"]
-    assert behaviour["relabeling"]["host"] == "Tenant"
+
+def test_sharepoint_repurposed_fields_relabeled_not_hidden():
+    """Four native fields are repurposed to carry Entra certificate credentials, two
+    of them (`schema`, `password`) holding something their stock label actively
+    misdescribes. Each must stay visible and be relabeled, or the intake form asks
+    for a bare 'Schema' and a 'Password' that is neither."""
+    behaviour = _sharepoint_entry()["ui-field-behaviour"]
+
+    assert behaviour["relabeling"] == {
+        "login": "Client ID",
+        "host": "Tenant",
+        "schema": "Certificate Thumbprint",
+        "password": "Certificate Private Key (PEM)",
+    }
+    assert not set(behaviour["relabeling"]) & set(behaviour["hidden-fields"])
