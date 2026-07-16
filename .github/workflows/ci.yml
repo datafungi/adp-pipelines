@@ -23,7 +23,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v8
+      # setup-uv publishes no floating major tag (v6 and v7 have one, v8 does not), so
+      # this pins the sha upstream's README recommends. Bump both sha and comment
+      # together; `gh api repos/astral-sh/setup-uv/git/ref/tags/<tag> --jq .object.sha`.
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: true
 

@@ -30,10 +30,14 @@ docker compose up --build       # http://localhost:8080  (admin / admin)
 `uv.lock`, `provider_registration/`, `.dockerignore`) — a DAG change rebuilds nothing.
 
 Pushes authenticate by **OIDC federation**, no stored credentials: the workflow mints a
-GitHub token that Azure trades for an ARM token, trusted only for
-`repo:datafungi/adp-pipelines:ref:refs/heads/main`. The identity, its two roles, and the
-required repo variables (`AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_SUBSCRIPTION_ID`)
-are provisioned by the `shared-acr` Terraform stack in the `azure-data-platform` repo.
+GitHub token that Azure trades for an ARM token, trusted only for this repo's `main`
+branch — subject `repo:datafungi@193031567/adp-pipelines@1301127872:ref:refs/heads/main`.
+The id suffixes are GitHub's *immutable subject claim* format, automatic for repos created
+on or after 2026-07-15 (this one, by 22 hours); read it with
+`gh api repos/datafungi/adp-pipelines/actions/oidc/customization/sub --jq .sub_claim_prefix`
+rather than hand-writing it. The identity, its two roles, and the required repo variables
+(`AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_SUBSCRIPTION_ID`) are provisioned by the
+`shared-acr` Terraform stack in the `azure-data-platform` repo.
 
 Deploying a build: pin the `<sha>` tag in that repo's `helm/airflow/values-dev.yaml`.
 `:dev` is a moving tag for local docker-compose and the dev-cluster MVP only.
