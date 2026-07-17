@@ -44,9 +44,10 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["plugins", "dags", "provider_registration"]
 testpaths = ["tests"]
-addopts = "-m 'not integration'"
+addopts = "-m 'not integration and not image'"
 markers = [
     "integration: hits real external services; requires credentials (e.g. via .env). Run with `pytest -m integration`.",
+    "image: runs against the built container image; requires Docker and IMAGE_REF. Run with `pytest -m image`.",
 ]
 
 [tool.ruff]

@@ -178,8 +178,10 @@ blocked on infrastructure that does not exist yet.
       field set `get_conn()` reads against the form the registration declares); runtime
       imports resolve against `[project.dependencies]`; `config.toml` convention across
       `dags/*/`
-- [ ] Image — rebuild `build-image.yml` as build → assert → push; drop the now-unneeded
-      `Container Registry Tasks Contributor` grant in `azure-data-platform`
+- [x] Image — `build-image.yml` builds on the runner, asserts against the built image,
+      then pushes
+- [ ] Drop the `Container Registry Tasks Contributor` grant in `azure-data-platform`'s
+      `shared-acr` stack, once the above is merged and `az acr build` is no longer run
 - [x] Live — `integration` marker wired against the dev Key Vault
 - [x] Retire the read-parsing check DAG — its assertions were deterministic and already
       covered by Unit

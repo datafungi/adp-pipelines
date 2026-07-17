@@ -1,9 +1,18 @@
-# Builds the Airflow runtime image and pushes it to the shared ACR.
+# Builds the Airflow runtime image, tests it, and pushes it to the shared ACR.
 #
 # This repo owns the image because it owns the dependency set (pyproject.toml/uv.lock).
 # Only the inputs the image actually bakes trigger a build -- DAGs and plugins are
 # delivered at runtime (git-sync on AKS, bind-mount locally), so changing them must not
-# rebuild anything.
+# rebuild anything. A DAG importing something the image lacks is caught instead by the
+# contract tier in ci.yml, which runs on every PR (see docs/testing.md).
+#
+# The build runs on the runner rather than through `az acr build` so the image tier can
+# gate the push: build -> assert -> push only if green. Building inside ACR pushes as a
+# side effect of building, leaving no seam to test in. It also drops a role -- pushing
+# needs only AcrPush, where `az acr build` additionally needs Container Registry Tasks
+# Contributor for the control-plane task run. This depends on the registry staying
+# publicly reachable; a private endpoint would put it out of a hosted runner's reach and
+# force the build back inside ACR.
 #
 # Requires three repository variables (Settings -> Secrets and variables -> Actions ->
 # Variables). None are secret: an OIDC client id is inert without a matching federated
@@ -23,6 +32,8 @@ on:
       - uv.lock
       - provider_registration/**
       - .dockerignore
+      - tests/test_image.py
+      - tests/conftest.py
       - .github/workflows/build-image.yml
   pull_request:
     paths:
@@ -31,6 +42,8 @@ on:
       - uv.lock
       - provider_registration/**
       - .dockerignore
+      - tests/test_image.py
+      - tests/conftest.py
       - .github/workflows/build-image.yml
   workflow_dispatch:
 
@@ -48,22 +61,8 @@ env:
   IMAGE_NAME: airflow
 
 jobs:
-  # A pull request cannot push. Fork PRs get no privileged OIDC token at all, and
-  # trusting a branch subject for unreviewed code would let any PR overwrite `:dev`.
-  # Building on the runner proves the Dockerfile still builds without touching Azure --
-  # .dockerignore applies here identically, so green here means green in the ACR task.
-  validate:
-    name: Validate Dockerfile
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: Build (no push)
-        run: docker build .
-
   build:
-    name: Build & push
-    if: github.event_name != 'pull_request'
+    name: Build, test & push
     runs-on: ubuntu-latest
     permissions:
       id-token: write # mint the OIDC token that azure/login exchanges for an ARM token
@@ -71,27 +70,51 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # setup-uv publishes no floating major tag (v6 and v7 have one, v8 does not), so
+      # this pins the sha upstream's README recommends. Bump both sha and comment
+      # together; `gh api repos/astral-sh/setup-uv/git/ref/tags/<tag> --jq .object.sha`.
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: true
+
+      # The image tier drives `docker run` from pytest, so the runner needs the dev group
+      # even though the image itself is built without it.
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Build
+        run: docker build -t "$IMAGE_NAME:$GITHUB_SHA" .
+
+      # Gates the push: third-party imports resolve, every connection type the baked shim
+      # declares reaches its hook class, and the DAGs parse -- all inside the image, with
+      # dags/ and plugins/ mounted as git-sync delivers them.
+      - name: Test image
+        run: IMAGE_REF="$IMAGE_NAME:$GITHUB_SHA" uv run pytest -m image
+
+      # A pull request cannot push. Fork PRs get no privileged OIDC token at all, and
+      # trusting a branch subject for unreviewed code would let any PR overwrite `:dev`.
       - uses: azure/login@v3
+        if: github.event_name != 'pull_request'
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      # `az acr build` runs the build inside ACR: the runner only uploads the context,
-      # so there is no local docker build and no `docker push`. Both tags come off the
-      # single build.
       #   :<sha>  immutable -- what Helm pins to deploy.
       #   :dev    moving    -- deliberate carve-out, consumed only by local
       #                        docker-compose and the dev-cluster MVP.
-      - name: Build in ACR and push
+      - name: Push
+        if: github.event_name != 'pull_request'
         run: |
-          az acr build \
-            --registry "$ACR_NAME" \
-            --image "$IMAGE_NAME:$GITHUB_SHA" \
-            --image "$IMAGE_NAME:dev" \
-            .
+          az acr login --name "$ACR_NAME"
+          registry="$ACR_NAME.azurecr.io/$IMAGE_NAME"
+          docker tag "$IMAGE_NAME:$GITHUB_SHA" "$registry:$GITHUB_SHA"
+          docker tag "$IMAGE_NAME:$GITHUB_SHA" "$registry:dev"
+          docker push "$registry:$GITHUB_SHA"
+          docker push "$registry:dev"
 
       - name: Summary
+        if: github.event_name != 'pull_request'
         run: |
           echo "Pushed \`$ACR_NAME.azurecr.io/$IMAGE_NAME:$GITHUB_SHA\` (also tagged \`:dev\`)." \
             >> "$GITHUB_STEP_SUMMARY"

@@ -4,9 +4,6 @@
 # uv.lock (managed by `uv`), so a `uv add <pkg>` flows into the image on the next
 # build. DAGs and plugins are NOT baked — they are delivered at runtime (git-sync on
 # AKS, bind-mount locally), so only pyproject.toml + uv.lock enter the build context.
-#
-# Stays on the classic builder: CI ships this via `az acr build`, and ACR Tasks has no
-# BuildKit ("the --mount option requires BuildKit"). No RUN --mount here for that reason.
 
 ARG AIRFLOW_VERSION=3.2.2
 FROM apache/airflow:slim-${AIRFLOW_VERSION}-python3.12
