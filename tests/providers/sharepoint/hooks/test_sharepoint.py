@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 
 import pytest
+from adp_provider_reg.get_provider_info import get_provider_info
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from openpyxl import Workbook
@@ -244,6 +245,74 @@ def test_get_conn_private_key_error_names_the_connection(mocker):
 
     with pytest.raises(ValueError, match="sharepoint-prod-conn"):
         hook.get_conn()
+
+
+# --- provider_registration contract ---------------------------------------------
+
+# Native Connection fields a form can expose. The hook reads other attributes that are
+# no part of the schema the UI describes.
+_NATIVE_FIELDS = frozenset(
+    {
+        "conn_id",
+        "conn_type",
+        "description",
+        "extra",
+        "host",
+        "login",
+        "password",
+        "port",
+        "schema",
+    }
+)
+
+
+class RecordingConnection(FakeConnection):
+    """FakeConnection that records which native fields were read.
+
+    `__getattribute__`, not `__getattr__`: FakeConnection assigns the fields in
+    `__init__`, so they exist and `__getattr__` would never fire. Unset native fields
+    answer with a placeholder so a newly-read field fails the assert below rather than
+    raising AttributeError, which would read as a fixture gap. Non-native attributes
+    keep FakeConnection's behaviour of raising.
+    """
+
+    def __init__(self, **kwargs):
+        object.__setattr__(self, "accessed", set())
+        super().__init__(**kwargs)
+
+    def __getattribute__(self, name):
+        if name not in _NATIVE_FIELDS:
+            return object.__getattribute__(self, name)
+
+        object.__getattribute__(self, "accessed").add(name)
+        try:
+            return object.__getattribute__(self, name)
+        except AttributeError:
+            return "recorded"
+
+
+def test_relabeled_fields_are_the_fields_the_hook_reads(mocker):
+    """The registration and the hook must describe one schema.
+
+    The registration is baked into the image, the hook git-synced, so they drift
+    independently and nothing else compares them. Adding a `conn.port` read here would
+    leave `port` hidden in the form and the connection unconfigurable.
+
+    Scoped to get_conn() because that is where a hook consumes its Connection -- the
+    other methods take paths, not credentials.
+    """
+    conn = RecordingConnection()
+    mocker.patch.object(SharePointHook, "get_connection", return_value=conn)
+    _patch_auth_chain(mocker)
+
+    SharePointHook(site_url=SITE_URL).get_conn()
+
+    entry = next(
+        e
+        for e in get_provider_info()["connection-types"]
+        if e["connection-type"] == SharePointHook.conn_type
+    )
+    assert conn.accessed == set(entry["ui-field-behaviour"]["relabeling"])
 
 
 # --- download_file / read_excel -------------------------------------------------
